@@ -1,0 +1,185 @@
+#!/Library/Frameworks/Python.framework/Versions/3.6/bin/python3
+import json
+import os
+import subprocess
+import sys
+
+from cmake_misc.docker import get_docker_shell
+from cmake_misc.docker import make_docker_image
+from cmake_misc.ssh import get_ssh_shell
+
+conan_dir = os.environ.get("HOME")
+toolchain = os.environ.get("HOME") + '/bin'
+clion_environ_file = 'clion.environ'
+
+
+def detect_compiler(shell):
+    if len(shell.run(['which', 'clang'])) > 0:
+        return 'clang'
+    tmp = shell.run(['mktemp', '-d', '/tmp/cmake.XXXXXX'])
+    compiler = shell.run(['echo', '"project(cmake_test_run)"', '>', os.path.join(tmp, 'CMakeLists.txt'), '&&',
+                          'cd', tmp, '&&', 'cmake', '.', '>', '/dev/null', '&&',
+                          'grep', '^CMAKE_C_COMPILER:', os.path.join(tmp, 'CMakeCache.txt'), '&&',
+                          'rm', '-rf', tmp
+                          ])
+    pos = compiler.rfind('/')
+    if pos == -1:
+        exit("Failed to detect compiler")
+    return compiler[pos + 1:]
+
+
+def cpp(compiler):
+    if compiler == 'cc':
+        return 'c++'
+    return compiler + '++'
+
+
+def make_compiler_symlink(toolchain, compiler):
+    toolchain_path = os.path.join(toolchain, compiler)
+    if not os.path.isfile(toolchain_path):
+        path = subprocess.run(['which', compiler], stdout=subprocess.PIPE).stdout.decode().strip()
+        if len(path) > 0:
+            os.symlink(path, toolchain_path)
+
+
+def load_environ():
+    environ = {}
+    file = open(clion_environ_file, 'r')
+    for line in file:
+        line = line.rstrip('\n')
+        pos = line.find('=')
+        environ[line[0:pos]] = line[pos + 1:]
+    return environ
+
+
+def save_environ(has_ninja):
+    file = open(clion_environ_file, 'w')
+    clion_env = '\n'.join(key + '=' + value for (key, value) in os.environ.items() if key.find('CLION_BUILD_') == 0)
+    if has_ninja:
+        clion_env = clion_env + '\nNinja=true'
+    file.write(clion_env.strip())
+
+
+def get_shell(environ):
+    server = environ.get("CLION_BUILD_SERVER", None)
+    if server is None:
+        return get_docker_shell(environ)
+    return get_ssh_shell(server)
+
+
+if sys.argv[1:] == ['--make-docker-image']:
+    make_docker_image()
+    exit(0)
+
+if sys.argv[1:] == ['-version']:
+    cmake = get_shell(os.environ).call(['cmake'] + sys.argv[1:])
+
+elif "--build" in sys.argv:
+    environ = load_environ()
+    shell = get_shell(environ)
+
+    source_path = sys.argv[sys.argv.index("--build") + 1]
+    source_path = source_path[0:source_path.rfind('/')]
+    shell.sync_source(source_path)
+    if os.path.isfile(os.path.join(source_path, "conanfile.py")):
+        has_ninja = []
+        if 'Ninja' in environ:
+            has_ninja = ['CONAN_CMAKE_GENERATOR=Ninja']
+        cmake = shell.call([
+            'CONAN_USER_HOME=' + conan_dir, 'conan', 'source',
+            '--source-folder=' + os.getcwd() + '/conan/source', source_path, '&&'] + has_ninja + [
+            'CONAN_USER_HOME=' + conan_dir, 'conan', 'build',
+            '--source-folder=' + os.getcwd() + '/conan/source',
+            '--install-folder=' + os.getcwd() + '/conan/install',
+            '--build-folder=' + os.getcwd() + '/conan/install',
+            source_path
+        ], desc="Build conan package: %s" % source_path)
+    else:
+        if 'Ninja' in environ:
+            cmake = shell.call(['cd', os.getcwd(), ';', 'ninja'])
+        else:
+            cmake = shell.call(['cd', os.getcwd(), ';', 'cmake'] + ['"' + x + '"' for x in sys.argv[1:]])
+
+else:
+    shell = get_shell(os.environ)
+    source_path = next((x for x in sys.argv[1:] if x[0] == '/'), None)
+    if source_path is None:
+        sys.exit('Failed to detect source path. It should begin from / (backslash)')
+    shell.sync_source(source_path)
+    shell.mkdir(os.getcwd())
+
+    conanfile_txt = os.path.join(source_path, 'conanfile.txt')
+    conanfile_py = os.path.join(source_path, 'conanfile.py')
+    if os.path.isfile(conanfile_py) or os.path.isfile(conanfile_txt):
+        sys.stderr.write("Conan detected\n")
+
+        shell.call(['test', conan_dir, '!=', '~', '-a', '!', '-d', conan_dir + '/.conan', '&&',
+                    'sudo', 'cp', '-R', '~/.conan', conan_dir + '/.conan', '&&',
+                    'sudo', 'chown', '-R', '`id -u`', conan_dir + '/.conan'], desc="Check conan settings")
+
+        compiler = shell.run(['CONAN_USER_HOME=' + conan_dir, 'conan', 'profile', 'get', 'settings.compiler', 'default'])
+
+        shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
+                    '--install-folder=' + os.getcwd(),
+                    '--build=missing',
+                    '--json=' + os.getcwd() + '/install.json',
+                    source_path
+                    ])
+
+        packages = json.loads(shell.run(['cat', os.getcwd() + '/install.json']))
+        for installed in packages["installed"]:
+            for item in (item["id"] for item in installed["packages"] if not item["cache"]):
+                package_path = conan_dir + '/.conan/data/{recipe}/package/{item}'.\
+                    format(recipe=installed["recipe"]["id"], item=item).replace('@', '/')
+                os.makedirs(package_path, exist_ok=True)
+                shell.sync_artifacts(package_path + '/')
+
+        if os.path.isfile(conanfile_py):
+            shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
+                        '--install-folder=' + os.getcwd() + '/conan/install',
+                        source_path
+                        ], stdout=subprocess.DEVNULL)
+    else:
+        compiler = detect_compiler(shell)
+
+    shell.mkdir(toolchain)
+    shell.call(args=['ln', '-fs', '`which %s`' % compiler, os.path.join(toolchain, compiler), ';',
+                     'ln', '-fs', '`which %s`' % cpp(compiler), os.path.join(toolchain, cpp(compiler)), ';',
+                     'ln', '-fs', '`which make`', os.path.join(toolchain, 'make')
+                     ], desc="Prepare toolchain: path=%s, compiler=%s" % (toolchain, compiler))
+    if not os.path.isdir(toolchain):
+        os.mkdir(toolchain)
+    make_compiler_symlink(toolchain, compiler)
+    make_compiler_symlink(toolchain, cpp(compiler))
+    make_compiler_symlink(toolchain, 'make')
+
+    has_ninja = len(shell.run(['which', 'ninja'])) > 0
+    save_environ(has_ninja)
+
+    cmake = shell.call(['cd', os.getcwd(), '&&', 'rm', '-f', 'CMakeCache.txt', '&&',
+                        'cmake',
+                        '-DCMAKE_C_COMPILER=' + os.path.join(toolchain, compiler),
+                        '-DCMAKE_CXX_COMPILER=' + os.path.join(toolchain, cpp(compiler)),
+                        '-DCMAKE_MAKE_PROGRAM=' + os.path.join(toolchain, 'make')
+                        ] + ['"' + x + '"' for x in sys.argv[1:]])
+    if cmake != 0:
+        exit(cmake)
+
+    shell.sync_artifacts(os.path.join(os.getcwd(), 'CMakeCache.txt'))
+    shell.sync_artifacts(os.path.join(os.getcwd(), 'CMakeFiles/'))
+    shell.sync_artifacts(os.path.join(os.getcwd(), 'Makefile'))
+    shell.sync_artifacts(os.path.join(os.getcwd(), 'cmake_install.cmake'))
+
+    if has_ninja and not os.path.isfile(conanfile_py) and  not os.path.isfile(conanfile_txt):
+        args = sys.argv[1:]
+        if '-G' in args:
+            pos = args.index('-G')
+            args = args[0:pos] + args[pos+2:]
+        cmake = shell.call(['cd', os.getcwd(), '&&', 'rm', '-f', 'CMakeCache.txt', '&&',
+                            'cmake',
+                            '-G', 'Ninja',
+                            '-DCMAKE_C_COMPILER=' + os.path.join(toolchain, compiler),
+                            '-DCMAKE_CXX_COMPILER=' + os.path.join(toolchain, cpp(compiler)),
+                            ] + ['"' + x + '"' for x in args], stdout=subprocess.DEVNULL, desc="Prepare project for ninja build")
+
+exit(cmake)
