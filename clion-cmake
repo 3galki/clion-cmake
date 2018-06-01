@@ -90,8 +90,8 @@ elif "--build" in sys.argv:
             '--source-folder=' + os.getcwd() + '/conan/source', source_path, '&&'] + has_ninja + [
             'CONAN_USER_HOME=' + conan_dir, 'conan', 'build',
             '--source-folder=' + os.getcwd() + '/conan/source',
-            '--install-folder=' + os.getcwd() + '/conan/install',
-            '--build-folder=' + os.getcwd() + '/conan/install',
+            '--install-folder=' + os.getcwd(),
+            '--build-folder=' + os.getcwd(),
             source_path
         ], desc="Build conan package: %s" % source_path)
     else:
@@ -125,6 +125,7 @@ else:
                     '--json=' + os.getcwd() + '/install.json',
                     source_path
                     ])
+        shell.sync_artifacts(os.path.join(os.getcwd(), 'conanbuildinfo.cmake'))
 
         packages = json.loads(shell.run(['cat', os.getcwd() + '/install.json']))
         for installed in packages["installed"]:
@@ -134,11 +135,11 @@ else:
                 os.makedirs(package_path, exist_ok=True)
                 shell.sync_artifacts(package_path + '/')
 
-        if os.path.isfile(conanfile_py):
-            shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
-                        '--install-folder=' + os.getcwd() + '/conan/install',
-                        source_path
-                        ], stdout=subprocess.DEVNULL)
+        # if os.path.isfile(conanfile_py):
+        #     shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
+        #                 '--install-folder=' + os.getcwd() + '/conan/install',
+        #                 source_path
+        #                 ], stdout=subprocess.DEVNULL)
     else:
         compiler = detect_compiler(shell)
 
@@ -170,7 +171,7 @@ else:
     shell.sync_artifacts(os.path.join(os.getcwd(), 'Makefile'))
     shell.sync_artifacts(os.path.join(os.getcwd(), 'cmake_install.cmake'))
 
-    if has_ninja and not os.path.isfile(conanfile_py) and  not os.path.isfile(conanfile_txt):
+    if has_ninja:# and not os.path.isfile(conanfile_py) and not os.path.isfile(conanfile_txt):
         args = sys.argv[1:]
         if '-G' in args:
             pos = args.index('-G')
