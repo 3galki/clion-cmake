@@ -10,6 +10,7 @@ from cmake_misc.ssh import get_ssh_shell
 
 conan_dir = os.environ.get("HOME")
 toolchain = os.environ.get("HOME") + '/bin'
+conan_tmp = '/..conan/'
 clion_environ_file = 'clion.environ'
 
 
@@ -87,11 +88,11 @@ elif "--build" in sys.argv:
             has_ninja = ['CONAN_CMAKE_GENERATOR=Ninja']
         cmake = shell.call([
             'CONAN_USER_HOME=' + conan_dir, 'conan', 'source',
-            '--source-folder=' + os.getcwd() + '/conan/source', source_path, '&&'] + has_ninja + [
+            '--source-folder=' + os.getcwd() + conan_tmp + 'source', source_path, '&&'] + has_ninja + [
             'CONAN_USER_HOME=' + conan_dir, 'conan', 'build',
-            '--source-folder=' + os.getcwd() + '/conan/source',
-            '--install-folder=' + os.getcwd() + '/conan/install',
-            '--build-folder=' + os.getcwd() + '/conan/install',
+            '--source-folder=' + os.getcwd() + conan_tmp + 'source',
+            '--install-folder=' + os.getcwd() + conan_tmp + 'install',
+            '--build-folder=' + os.getcwd() + conan_tmp + 'install',
             source_path
         ], desc="Build conan package: %s" % source_path)
     else:
@@ -137,7 +138,7 @@ else:
 
         if os.path.isfile(conanfile_py):
             shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
-                        '--install-folder=' + os.getcwd() + '/conan/install',
+                        '--install-folder=' + os.getcwd() + conan_tmp + 'install',
                         source_path
                         ], stdout=subprocess.DEVNULL)
     else:
@@ -166,9 +167,16 @@ else:
     if cmake != 0:
         exit(cmake)
 
+    files = shell.run(['find', os.getcwd(), '-name', 'CMakeFiles', '-o', '-name', 'Makefile'])
+    for file in files.splitlines():
+        folder = os.path.dirname(file)
+        if not os.path.isdir(folder):
+            os.mkdir(folder)
+        if file.find(conan_tmp) == -1:
+            if file.endswith('/CMakeFiles'):
+                file += '/'
+            shell.sync_artifacts(file)
     shell.sync_artifacts(os.path.join(os.getcwd(), 'CMakeCache.txt'))
-    shell.sync_artifacts(os.path.join(os.getcwd(), 'CMakeFiles/'))
-    shell.sync_artifacts(os.path.join(os.getcwd(), 'Makefile'))
     shell.sync_artifacts(os.path.join(os.getcwd(), 'cmake_install.cmake'))
 
     if has_ninja:# and not os.path.isfile(conanfile_py) and not os.path.isfile(conanfile_txt):
