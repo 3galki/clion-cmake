@@ -168,14 +168,16 @@ else:
         exit(cmake)
 
     files = shell.run(['find', os.getcwd(), '-name', 'CMakeFiles', '-o', '-name', 'Makefile'])
+
     for file in files.splitlines():
-        folder = os.path.dirname(file)
-        if not os.path.isdir(folder):
-            os.mkdir(folder)
-        if file.find(conan_tmp) == -1:
-            if file.endswith('/CMakeFiles'):
-                file += '/'
-            shell.sync_artifacts(file)
+        if len(file) > 0:
+            folder = os.path.dirname(file)
+            if not os.path.isdir(folder):
+                os.mkdir(folder)
+            if file.find(conan_tmp) == -1:
+                if file.endswith('/CMakeFiles'):
+                    file += '/'
+                shell.sync_artifacts(file)
     shell.sync_artifacts(os.path.join(os.getcwd(), 'CMakeCache.txt'))
     shell.sync_artifacts(os.path.join(os.getcwd(), 'cmake_install.cmake'))
 
