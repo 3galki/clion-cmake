@@ -59,7 +59,7 @@ def get_package_urls(package):
     return result
 
 
-def version_up(package, url, up_map):
+def version_up(package, url, up_map, remote):
     folder = os.path.join(workdir, package.name)
     home = os.getenv('CONAN_USER_HOME', os.getenv('HOME', None))
     if home is None:
@@ -67,15 +67,20 @@ def version_up(package, url, up_map):
     conandir = os.path.join(home, '.conan/data', package.fullname.replace('@', '/'))
     source = os.path.join(conandir, 'source')
     if not os.path.isdir(source):
-        subprocess.call(['conan', 'install', '--build', package.name, package.fullname])
+        if subprocess.call(['conan', 'install', '--build', package.name, package.fullname], stdout=subprocess.DEVNULL) != 0:
+            exit('Failed to get sources for "%s"' % package.fullname)
     shutil.copytree(source, folder)
     shutil.copy(os.path.join(conandir, 'export/conanfile.py'), os.path.join(folder, 'conanfile.py'))
 
     # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
     version = conanfile_version_up(folder, up_map)
-    if subprocess.call(['conan', 'create', folder, package.author]) == 0:
-        print("CALL: conan upload --remote ispsystem --all --confirm %s" % package.fullname)
-        # subprocess.call(['conan', 'upload', '--remote', 'ispsystem', '--all', '--confirm', package.fullname])
+    if subprocess.call(['conan', 'create', folder, package.author], stdout=subprocess.DEVNULL) == 0:
+        if remote is None:
+            print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % package.fullname)
+        else:
+            subprocess.call(['conan', 'upload', '--remote', remote, '--all', '--confirm', package.fullname], stdout=subprocess.DEVNULL)
+    else:
+        exit('Failed to create "%s"' % package.name)
     return package.fullname, package.name + '/' + version + '@' + package.author
 
 
@@ -100,6 +105,7 @@ def conanfile_version_up(folder, up_map):
 
 parser = argparse.ArgumentParser(description='Conan package version updater')
 parser.add_argument('--base', help='base package where version was updated', required=True)
+parser.add_argument('--remote', help='conan remote to upload new packages', default=None)
 parser.add_argument('package', help='package to update. all depended packages will be updated too', nargs='+')
 args = parser.parse_args()
 
@@ -109,19 +115,23 @@ with tempfile.TemporaryDirectory() as workdir:
     for package in args.package:
         package_urls = get_package_urls(package)
         orig = next((name for name in package_urls.keys() if name.startswith(base.name + '/')))
+        if orig == base.fullname:
+            exit('package "{package}" already depended from "{base}"'.format(package=package, base=base.fullname))
         build_order = get_build_order(package, orig)
 
         up_map = {orig: base.fullname}
-        print('Update from "%s" to "%s"' % (orig, base.fullname))
+        if args.remote is not None:
+            print('Update from "%s" to "%s"' % (orig, base.fullname))
         for group in build_order:
             with ThreadPoolExecutor(max_workers=4) as executor:
-                pkgs = (executor.submit(version_up, ConanPackge(package), package_urls[package], up_map) for package in group)
+                pkgs = (executor.submit(version_up, ConanPackge(package), package_urls[package], up_map, args.remote) for package in group)
                 add = {}
                 for future in as_completed(pkgs):
                     orig, updated = future.result()
                     if orig is not None:
                         add[orig] = updated
-                        print('Update from "%s" to "%s"' % (orig, updated))
+                        if args.remote is not None:
+                            print('Update from "%s" to "%s"' % (orig, updated))
                 up_map.update(add)
 
         conanfile = os.path.join(package, 'conanfile.txt')
