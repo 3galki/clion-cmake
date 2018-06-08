@@ -21,19 +21,6 @@ class ConanPackge:
 
 
 def get_build_order(package, original_version):
-    # original = subprocess.run(['conan', 'info', '--package-filter', base.name + '/*', '-n', 'None', package],
-    #                           stdout=subprocess.PIPE)
-    # if original.returncode != 0:
-    #     print('Failed to get original base package version for {package}'.format(package=package))
-    #     return
-    # original_version = original.stdout.decode().strip()
-    # if len(original_version) == 0:
-    #     print('package "{package}" does not depended from "{base}"'.format(package=package, base=base.fullname))
-    #     return
-    # if original_version == base.fullname:
-    #     print('package "{package}" already depended from "{base}"'.format(package=package, base=base.fullname))
-    #     return
-
     print('Original base package version = {data}'.format(data=original_version))
     result = 'output.json'
     if subprocess.call(['conan', 'info', '--build-order', original_version, '--json', result, package]) != 0:
@@ -115,9 +102,13 @@ with tempfile.TemporaryDirectory() as workdir:
     print("Working directory: %s" % workdir)
     for package in args.package:
         package_urls = get_package_urls(package)
-        orig = next((name for name in package_urls.keys() if name.startswith(base.name + '/')))
+        orig = next((name for name in package_urls.keys() if name.startswith(base.name + '/')), None)
+        if orig is None:
+            print('Package "{package}" does not depended from "{base}"'.format(package=package, base=base.fullname))
+            continue
         if orig == base.fullname:
-            exit('package "{package}" already depended from "{base}"'.format(package=package, base=base.fullname))
+            print('package "{package}" already depended from "{base}"'.format(package=package, base=base.fullname))
+            continue
         build_order = get_build_order(package, orig)
 
         up_map = {orig: base.fullname}
