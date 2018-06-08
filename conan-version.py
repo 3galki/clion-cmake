@@ -80,7 +80,7 @@ def conanfile_version_up(folder, up_map):
     if len(values) < 3:
         values.append(1)
     else:
-        values[2] = str(int(values[2]) + 1)
+        values[len(values) - 1] = str(int(values[len(values) - 1]) + 1)
     content = content[0:version.start(1)] + '.'.join(values) + content[version.end(1):]
     for old, val in up_map.items():
         content = content.replace('"' + old + '"', '"' + val + '"')
