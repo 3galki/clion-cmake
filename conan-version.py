@@ -74,14 +74,15 @@ def version_up(package, url, up_map, remote):
 
     # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
     version = conanfile_version_up(folder, up_map)
+    new_package = package.fullname, package.name + '/' + version + '@' + package.author
     if subprocess.call(['conan', 'create', folder, package.author], stdout=subprocess.DEVNULL) == 0:
         if remote is None:
-            print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % package.fullname)
+            print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % new_package)
         else:
             subprocess.call(['conan', 'upload', '--remote', remote, '--all', '--confirm', package.fullname], stdout=subprocess.DEVNULL)
     else:
         exit('Failed to create "%s"' % package.name)
-    return package.fullname, package.name + '/' + version + '@' + package.author
+    return new_package
 
 
 def conanfile_version_up(folder, up_map):
