@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import re
-# import shutil
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -59,15 +59,23 @@ def get_package_urls(package):
     return result
 
 
-def version_up(package: ConanPackge, url, up_map):
+def version_up(package, url, up_map):
     folder = os.path.join(workdir, package.name)
-    # conandir = '/Users/greed/.conan/data/' + package.replace('@', '/')
-    # shutil.copytree(conandir + '/source', folder)
-    # shutil.copy(conandir + '/export/conanfile.py', conanfile)
+    home = os.getenv('CONAN_USER_HOME', os.getenv('HOME', None))
+    if home is None:
+        exit('Failed to get CONAN home')
+    conandir = os.path.join(home, '.conan/data', package.fullname.replace('@', '/'))
+    source = os.path.join(conandir, 'source')
+    if not os.path.isdir(source):
+        subprocess.call(['conan', 'install', '--build', package.name, package.fullname])
+    shutil.copytree(source, folder)
+    shutil.copy(os.path.join(conandir, 'export/conanfile.py'), os.path.join(folder, 'conanfile.py'))
 
-    subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
+    # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
     version = conanfile_version_up(folder, up_map)
-    subprocess.call(['conan', 'create', folder, package.author])
+    if subprocess.call(['conan', 'create', folder, package.author]) == 0:
+        print("CALL: conan upload --remote ispsystem --all --confirm %s" % package.fullname)
+        # subprocess.call(['conan', 'upload', '--remote', 'ispsystem', '--all', '--confirm', package.fullname])
     return package.fullname, package.name + '/' + version + '@' + package.author
 
 
@@ -106,7 +114,7 @@ with tempfile.TemporaryDirectory() as workdir:
         up_map = {orig: base.fullname}
         print('Update from "%s" to "%s"' % (orig, base.fullname))
         for group in build_order:
-            with ThreadPoolExecutor() as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 pkgs = (executor.submit(version_up, ConanPackge(package), package_urls[package], up_map) for package in group)
                 add = {}
                 for future in as_completed(pkgs):
