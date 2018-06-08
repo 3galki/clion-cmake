@@ -45,50 +45,62 @@ def get_package_urls(package):
         result[name.decode().strip()] = url.split('URL: ', 2)[1]
     return result
 
+class Worker:
+    def run(self, package, url, up_map, remote):
+        return self.version_up(package, url, up_map, remote)
 
-def version_up(package, url, up_map, remote):
-    folder = os.path.join(workdir, package.name)
-    home = os.getenv('CONAN_USER_HOME', os.getenv('HOME', None))
-    if home is None:
-        exit('Failed to get CONAN home')
-    conandir = os.path.join(home, '.conan/data', package.fullname.replace('@', '/'))
-    source = os.path.join(conandir, 'source')
-    if not os.path.isdir(source):
-        if subprocess.call(['conan', 'install', '--build', package.name, package.fullname], stdout=subprocess.DEVNULL) != 0:
-            exit('Failed to get sources for "%s"' % package.fullname)
-    shutil.copytree(source, folder)
-    shutil.copy(os.path.join(conandir, 'export/conanfile.py'), os.path.join(folder, 'conanfile.py'))
-
-    # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
-    version = conanfile_version_up(folder, up_map)
-    new_package = package.name + '/' + version + '@' + package.author
-    if subprocess.call(['conan', 'create', folder, package.author], stdout=subprocess.DEVNULL) == 0:
-        if remote is None:
-            print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % new_package)
+    def conanfile_version_up(self, folder, up_map):
+        conanfile = os.path.join(folder, 'conanfile.py')
+        with open(conanfile, 'r') as content_file:
+            content = content_file.read()
+        version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', content, re.MULTILINE)
+        values = version.group(1).split('.')
+        if len(values) < 3:
+            values.append(1)
         else:
-            subprocess.call(['conan', 'upload', '--remote', remote, '--all', '--confirm', package.fullname], stdout=subprocess.DEVNULL)
-    else:
-        exit('Failed to create "%s"' % package.name)
-    return new_package
+            values[len(values) - 1] = str(int(values[len(values) - 1]) + 1)
+        content = content[0:version.start(1)] + '.'.join(values) + content[version.end(1):]
+        for old, val in up_map.items():
+            content = content.replace('"' + old + '"', '"' + val + '"')
+            content = content.replace("'" + old + "'", "'" + val + "'")
+        with open(conanfile, 'w') as content_file:
+            content_file.write(content)
+        return '.'.join(values)
 
 
-def conanfile_version_up(folder, up_map):
-    conanfile = os.path.join(folder, 'conanfile.py')
-    with open(conanfile, 'r') as content_file:
-        content = content_file.read()
-    version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', content, re.MULTILINE)
-    values = version.group(1).split('.')
-    if len(values) < 3:
-        values.append(1)
-    else:
-        values[len(values) - 1] = str(int(values[len(values) - 1]) + 1)
-    content = content[0:version.start(1)] + '.'.join(values) + content[version.end(1):]
-    for old, val in up_map.items():
-        content = content.replace('"' + old + '"', '"' + val + '"')
-        content = content.replace("'" + old + "'", "'" + val + "'")
-    with open(conanfile, 'w') as content_file:
-        content_file.write(content)
-    return '.'.join(values)
+class ConanWorker(Worker):
+    def version_up(self, package, url, up_map, remote):
+        folder = os.path.join(workdir, package.name)
+        home = os.getenv('CONAN_USER_HOME', os.getenv('HOME', None))
+        if home is None:
+            exit('Failed to get CONAN home')
+        conandir = os.path.join(home, '.conan/data', package.fullname.replace('@', '/'))
+        source = os.path.join(conandir, 'source')
+        if not os.path.isdir(source):
+            if subprocess.call(['conan', 'install', '--build', package.name, package.fullname], stdout=subprocess.DEVNULL) != 0:
+                exit('Failed to get sources for "%s"' % package.fullname)
+        shutil.copytree(source, folder)
+        shutil.copy(os.path.join(conandir, 'export/conanfile.py'), os.path.join(folder, 'conanfile.py'))
+
+        # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
+        version = self.conanfile_version_up(folder, up_map)
+        new_package = package.name + '/' + version + '@' + package.author
+        if subprocess.call(['conan', 'create', folder, package.author], stdout=subprocess.DEVNULL) == 0:
+            if remote is None:
+                print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % new_package)
+            else:
+                subprocess.call(['conan', 'upload', '--remote', remote, '--all', '--confirm', package.fullname], stdout=subprocess.DEVNULL)
+        else:
+            exit('Failed to create "%s"' % package.name)
+        return new_package
+
+
+class GitLabWorker(Worker):
+    def __init__(self):
+        pass
+
+
+
 
 
 parser = argparse.ArgumentParser(description='Conan package version updater')
@@ -97,6 +109,7 @@ parser.add_argument('--remote', help='conan remote to upload new packages', defa
 parser.add_argument('package', help='package to update. all depended packages will be updated too', nargs='+')
 args = parser.parse_args()
 
+worker = ConanWorker()
 base = ConanPackge(args.base)
 with tempfile.TemporaryDirectory() as workdir:
     print("Working directory: %s" % workdir)
@@ -116,7 +129,7 @@ with tempfile.TemporaryDirectory() as workdir:
             print('Update from "%s" to "%s"' % (orig, base.fullname))
         for group in build_order:
             with ThreadPoolExecutor(max_workers=4) as executor:
-                pkgs = (executor.submit(version_up, ConanPackge(package), package_urls[package], up_map, args.remote) for package in group)
+                pkgs = (executor.submit(Worker.run, worker, ConanPackge(package), package_urls[package], up_map, args.remote) for package in group)
                 add = {}
                 for future in as_completed(pkgs):
                     version = future.result()
@@ -135,8 +148,8 @@ with tempfile.TemporaryDirectory() as workdir:
             with open(conanfile, 'w') as content_file:
                 content_file.write(content)
         elif os.path.isfile(os.path.join(package, 'conanfile.py')):
-            conanfile_version_up(package, up_map)
+            worker.conanfile_version_up(package, up_map)
         else:
-            version_up(ConanPackge(package), package_urls[package], up_map)
+            worker.version_up(ConanPackge(package), package_urls[package], up_map)
 
 exit(0)
