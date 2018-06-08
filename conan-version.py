@@ -61,7 +61,7 @@ def version_up(package, url, up_map, remote):
 
     # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
     version = conanfile_version_up(folder, up_map)
-    new_package = package.fullname, package.name + '/' + version + '@' + package.author
+    new_package = package.name + '/' + version + '@' + package.author
     if subprocess.call(['conan', 'create', folder, package.author], stdout=subprocess.DEVNULL) == 0:
         if remote is None:
             print("conan upload --remote ${CONAN_REMOTE} --all --confirm %s" % new_package)
@@ -119,11 +119,11 @@ with tempfile.TemporaryDirectory() as workdir:
                 pkgs = (executor.submit(version_up, ConanPackge(package), package_urls[package], up_map, args.remote) for package in group)
                 add = {}
                 for future in as_completed(pkgs):
-                    orig, updated = future.result()
-                    if orig is not None:
-                        add[orig] = updated
+                    version = future.result()
+                    if version is not None:
+                        add[package] = version
                         if args.remote is not None:
-                            print('Update from "%s" to "%s"' % (orig, updated))
+                            print('Update from "%s" to "%s"' % (orig, version))
                 up_map.update(add)
 
         conanfile = os.path.join(package, 'conanfile.txt')
