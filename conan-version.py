@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib3
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 
@@ -34,6 +36,7 @@ def get_build_order(package, original_version):
 
     return packages["groups"][1:]
 
+
 def get_package_urls(package):
     conan = subprocess.Popen(['conan', 'info', '-n', 'url', package], stdout=subprocess.PIPE)
     header = conan.stdout.readline().decode().strip()
@@ -45,20 +48,51 @@ def get_package_urls(package):
         result[name.decode().strip()] = url.split('URL: ', 2)[1]
     return result
 
+
 class Worker:
+    def __init__(self, base: ConanPackge):
+        self._base = base
+
     def run(self, package, url, up_map, remote):
         return self.version_up(package, url, up_map, remote)
+
+    def set_package(self, package):
+        package_urls = get_package_urls(package)
+        orig = next((name for name in package_urls.keys() if name.startswith(base.name + '/')), None)
+        if orig is None:
+            print('Package "{package}" does not depended from "{base}"'.format(package=package, base=base.fullname))
+            return False
+        if orig == base.fullname:
+            print('package "{package}" already depended from "{base}"'.format(package=package, base=base.fullname))
+            return False
+        build_order = get_build_order(package, orig)
+
+        up_map = {orig: base.fullname}
+        return True
+
+    def get_suffix(self, folder):
+        suffix = ord('a')
+        res = subprocess.Popen(['conan', 'info', '-n', 'None', folder], stdout=subprocess.PIPE)
+        for line in res.stdout:
+            if line.decode().strip() == self._base.fullname:
+                break
+            suffix += 1
+        return chr(suffix)
 
     def conanfile_version_up(self, folder, up_map):
         conanfile = os.path.join(folder, 'conanfile.py')
         with open(conanfile, 'r') as content_file:
             content = content_file.read()
         version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', content, re.MULTILINE)
+
+        suffix = self.get_suffix(folder)
+
         values = version.group(1).split('.')
-        if len(values) < 3:
-            values.append(1)
+        if values[-1].endswith(suffix):
+            values[-1] = str(int(values[0:len(values[-1]) - 1]) + 1) + suffix
         else:
-            values[len(values) - 1] = str(int(values[len(values) - 1]) + 1)
+            values.append('1' + suffix)
+
         content = content[0:version.start(1)] + '.'.join(values) + content[version.end(1):]
         for old, val in up_map.items():
             content = content.replace('"' + old + '"', '"' + val + '"')
@@ -69,7 +103,10 @@ class Worker:
 
 
 class ConanWorker(Worker):
-    def version_up(self, package, url, up_map, remote):
+    def __init__(self, base):
+        super().__init__(base)
+
+    def get_source(self, package):
         folder = os.path.join(workdir, package.name)
         home = os.getenv('CONAN_USER_HOME', os.getenv('HOME', None))
         if home is None:
@@ -81,6 +118,10 @@ class ConanWorker(Worker):
                 exit('Failed to get sources for "%s"' % package.fullname)
         shutil.copytree(source, folder)
         shutil.copy(os.path.join(conandir, 'export/conanfile.py'), os.path.join(folder, 'conanfile.py'))
+        return folder
+
+    def version_up(self, package, url, up_map, remote):
+        folder = self.get_source(package)
 
         # subprocess.call(['git', 'clone', url, folder], stderr=subprocess.DEVNULL)
         version = self.conanfile_version_up(folder, up_map)
@@ -96,24 +137,111 @@ class ConanWorker(Worker):
 
 
 class GitLabWorker(Worker):
-    def __init__(self):
-        pass
+    def __init__(self, base, url, token):
+        super().__init__(base)
+        self._url = url
+        self._token = token
+        urllib3.disable_warnings()
+
+    def get_source(self, package, url):
+        folder = os.path.join(workdir, package.name)
+        # if url.startswith('git@'):
+        #     url = url[4:].replace(':', '/')
+        # elif url.startswith('https://'):
+        #     url = url[8:]
+        # else:
+        #     exit("Bad repo URL: %s" % url)
+        # url = 'https://gitlab-ci-token:{token}@{url}'.format(token=self._token, url=url)
+        print('URL: %s' % url)
+        subprocess.call(['git', 'clone', url, folder])
+        return folder
+
+    def fix_url(self, url):
+        if url.startswith('git@'):
+            url = url[4:].replace(':', '/')
+        elif url.startswith('https://'):
+            url = url[8:]
+        else:
+            exit("Bad repo URL: %s" % url)
+        return 'https://gitlab-ci-token:{token}@{url}'.format(token=self._token, url=url)
+
+    def version_up(self, package, url, up_map, remote):
+        url = self.fix_url(url)
+        folder = self.get_source(package, url)
+        version = self.conanfile_version_up(folder, up_map)
+        subprocess.call(['git', 'checkout', '-b', 'version/' + version], cwd=folder)
+        subprocess.call(['git', 'commit', '-a', '-m', 'Upgrade versnios for conan packages'], cwd=folder)
+        subprocess.call(['git', 'push', 'origin', 'version/' + version], cwd=folder)
+
+        project_id = url.split('/', 3)[3].split('.')[0]
+        print('URL: ' + url + " project: " + project_id)
+        http = urllib3.PoolManager()
+        r = http.request(
+            method='POST',
+            url=self._url + '/api/v4/projects/{id}/merge_requests'.format(id=project_id.replace('/', '%2F')),
+            headers={'Private-Token': self._token},
+            fields={
+                'source_branch': 'version/' + version,
+                'target_branch': 'master',
+                'title': 'Version UP to ' + version,
+                'remove_source_branch': 'true',
+                'merge_when_pipeline_succeeds': 'true'
+            },
+
+        )
+        result = json.loads(r.data.decode())
+        status = ''
+        while status != 'success':
+            r1 = http.request(
+                method='GET',
+                url=self._url + '/api/v4/projects/{id}/merge_requests/{merge_iid}/pipelines'.format(id=result['project_id'], merge_iid=result["iid"])
+            )
+            tmp = json.loads(r1.data.decode())
+            status = tmp[0]["status"]
+            if status == "failed":
+                exit("Failed to build")
+            time.sleep(5)
+
+        http.request(
+            method='PUT',
+            url=self._url + '/api/v4/projects/{id}/merge_requests/{merge_iid}/merge'.format(id=result['project_id'], merge_iid=result["iid"]),
+            headers={'Private-Token': self._token},
+        )
 
 
-
+        pipeline_id = result["pipeline"]["id"]
+        status = ''
+        while status != 'success':
+            r1 = http.request(
+                method='GET',
+                url=self._url + '/api/v4/projects/{id}/pipelines/{pipeline_id}'.format(id=result['project_id'], pipeline_id=pipeline_id)
+            )
+            tmp = json.loads(r1.data.decode())
+            status = next((pipeline["status"] for pipeline in tmp if pipeline["id"] == pipeline_id))
+            if status == "failed":
+                exit("Failed to build")
+            time.sleep(5)
+        return package.name + '/' + version + '@' + package.author
 
 
 parser = argparse.ArgumentParser(description='Conan package version updater')
 parser.add_argument('--base', help='base package where version was updated', required=True)
 parser.add_argument('--remote', help='conan remote to upload new packages', default=None)
+parser.add_argument('--gitlab', help='GitLab URL', default=None)
+parser.add_argument('--gitlab-token', help='GitLab private token')
 parser.add_argument('package', help='package to update. all depended packages will be updated too', nargs='+')
 args = parser.parse_args()
 
-worker = ConanWorker()
 base = ConanPackge(args.base)
+if args.gitlab is None:
+    worker = ConanWorker(base)
+else:
+    worker = GitLabWorker(base, args.gitlab, args.gitlab_token)
+
 with tempfile.TemporaryDirectory() as workdir:
     print("Working directory: %s" % workdir)
     for package in args.package:
+        worker.set_package(package)
         package_urls = get_package_urls(package)
         orig = next((name for name in package_urls.keys() if name.startswith(base.name + '/')), None)
         if orig is None:
@@ -127,6 +255,7 @@ with tempfile.TemporaryDirectory() as workdir:
         up_map = {orig: base.fullname}
         if args.remote is not None:
             print('Update from "%s" to "%s"' % (orig, base.fullname))
+
         for group in build_order:
             with ThreadPoolExecutor(max_workers=4) as executor:
                 pkgs = (executor.submit(Worker.run, worker, ConanPackge(package), package_urls[package], up_map, args.remote) for package in group)
