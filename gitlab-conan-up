@@ -1,203 +1,258 @@
 #!/Library/Frameworks/Python.framework/Versions/3.6/bin/python3
 import argparse
+import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
+import time
+from urllib.parse import quote_plus
 import urllib3
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 
 
 class Gitlab:
-    def __init__(self, url, token, workdir):
+    class Project:
+        def __init__(self, gitlab, info, conanfile, depends):
+            self._gitlab = gitlab
+            self.info = info
+            self._conanfile = conanfile
+            self._depends = depends
+
+        @property
+        def name(self):
+            return None
+
+        def not_depends(self, projects):
+            return next((False for depend in self._depends if next((True for base in projects if base.name == depend), False)), True)
+
+        def update(self):
+            comment = ''
+            conanfile = self._conanfile
+            for name, value in self._depends.items():
+                prev = conanfile
+                conanfile = conanfile.replace('\n' + name + '/' + value + '@',  '\n' + name + '/' + self._gitlab._versions[name] + '@')
+                if prev != conanfile:
+                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value,
+                                                                       new=self._gitlab._versions[name])
+            if len(comment) > 0:
+                comment = 'Auto updating dependencies.' + comment
+                self._gitlab.update(self.info, 'conanfile.txt', conanfile, 'version/' + hashlib.md5(comment.encode()).hexdigest(), comment)
+
+        def up(self):
+            print('Update: %s' % self.info['name'])
+            self.update()
+            return self
+
+    class Package(Project):
+        def __init__(self,  gitlab, info, conanfile, depends, name, version):
+            super().__init__(gitlab, info, conanfile, depends)
+            self._name = name
+            self._version = version
+
+        @property
+        def name(self):
+            return self._name
+
+        def update(self):
+            conanfile = self._conanfile
+            comment = ''
+            for name, value in self._depends.items():
+                prev = conanfile
+                conanfile = conanfile.replace('"' + name + '/' + value + '@', '"' + name + '/' + self._gitlab._versions[name] + '@')
+                conanfile = conanfile.replace("'" + name + '/' + value + '@', "'" + name + '/' + self._gitlab._versions[name] + '@')
+                if prev != conanfile:
+                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab._versions[name])
+            if len(comment) > 0:
+                version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', conanfile, re.MULTILINE)
+                if version:
+                    values = version.group(1).split('.')
+                    while len(values)<3:
+                        values.append('0')
+                    values[-1] = str(int(values[-1]) + 1)
+                    self._version = '.'.join(values)
+                    conanfile = conanfile[0:version.start(1)] + self._version + conanfile[version.end(1):]
+                    comment = 'Auto updating to version {version}'.format(version=self._version) + comment
+                    if not self._gitlab.update(self.info, 'conanfile.py', conanfile, 'version/' + self._version, comment):
+                        return
+            self._gitlab._versions[self._name] = self._version
+
+    def __init__(self, url, token):
         self._url = url
         self._token = token
-        self._workdir = workdir
         self._pattern = re.compile('([^/]*)/([^@]*)@')
+        self._versions = {}
         urllib3.disable_warnings()
-
-    def get_source(self, package):
-        folder = os.path.join(self._workdir, package.split('/')[-1])
-        url = 'https://gitlab-ci-token:{token}@{gitlab}/{package}'.format(token=self._token, gitlab=self._url,
-                                                                          package=package)
-        print('URL: %s' % url)
-        if subprocess.call(['git', 'clone', url, folder]) != 0:
-            exit('Failed to clone {package}'.format(package=package))
-        return folder
 
     def get_projects(self, group):
         http = urllib3.PoolManager()
         r = http.request(
             method='GET',
-            url='https://{gitlab}/api/v4/groups/{id}/projects'.format(id=group.replace('/', '%2F'), gitlab=self._url),
-            headers={'Private-Token': self._token},
+            url='https://{gitlab}/api/v4/groups/{id}/projects?per_page=100'.format(id=quote_plus(group), gitlab=self._url),
+            headers={'Private-Token': self._token}
         )
         return json.loads(r.data.decode())
 
-    def get_file(self, project, folder, file):
+    def get_file(self, project, file):
         http = urllib3.PoolManager()
         r = http.request(
             method='GET',
             url='https://{gitlab}/api/v4/projects/{id}/repository/files/{file}/raw?ref=master'.
-                format(id=project.replace('/', '%2F'), gitlab=self._url, file=file),
+                format(id=project, gitlab=self._url, file=file),
             headers={'Private-Token': self._token},
         )
-        if r.status == 200:
-            with open(os.path.join(folder, file), 'wb') as fd:
-                fd.write(r.data)
-            return True
-        return False
+        if r.status != 200:
+            return None
+        return r.data.decode()
 
-    def conan_read_deps(self, folder):
-        info = subprocess.Popen(['conan', 'info', '-n', 'None', folder], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL)
-        version = info.stdout.readline().decode().strip()
-        if version.find('PROJECT') == -1:
-            if info.returncode != 0:
-                return None, None
-            info = subprocess.Popen(['conan', 'info', '-n', 'None', folder], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL)
-            version = info.stdout.readline().decode().strip()
-            if version.find('PROJECT') == -1:
-                return None, None
+    @staticmethod
+    def _version_less(first, second):
+        if first == second:
+            return False
+        f = first.split('.')
+        s = second.split('.')
+        for i in range(min(len(f), len(s))):
+            if f[i] == s[i]:
+                continue
+            if f[i].isdecimal() and s[i].isdecimal():
+                return int(f[i]) < int(s[i])
+            else:
+                return f[i] < s[i]
+        return len(f) < len(s)
+
+    def read_deps(self, stream):
         deps = {}
-        for line in info.stdout:
+        for line in stream:
             data = line.decode().strip()
             res = self._pattern.search(data)
             if res:
+                if res.group(1) in self._versions:
+                    if self._version_less(self._versions[res.group(1)], res.group(2)):
+                        self._versions[res.group(1)] = res.group(2)
+                else:
+                    self._versions[res.group(1)] = res.group(2)
                 deps[res.group(1)] = res.group(2)
-        return deps, version
+        return deps
+
+    def make_project(self, project, data):
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, 'conanfile.txt'), 'w') as fd:
+                fd.write(data)
+            info = subprocess.Popen(['conan', 'info', '-n', 'None', folder],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            for line in info.stdout:
+                version = line.decode().strip()
+                if version == 'PROJECT':
+                    return self.Project(self, project, data, self.read_deps(info.stdout))
+            return None
+
+    def make_package(self, project, data):
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, 'conanfile.py'), 'w') as fd:
+                fd.write(data)
+            info = subprocess.Popen(['conan', 'info', '-n', 'None', folder],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            for line in info.stdout:
+                version = line.decode().strip()
+                if version.endswith('@PROJECT'):
+                    version = self._pattern.search(version)
+                    return self.Package(self, project, data, self.read_deps(info.stdout), version.group(1), version.group(2))
+            return None
 
     def get_conan_versions(self, project):
-        with tempfile.TemporaryDirectory() as folder:
-            if self.get_file(project, folder, 'conanfile.py'):
-                deps, version = self.conan_read_deps(folder)
-                if deps is not None:
-                    version = self._pattern.search(version)
-                    return project, version.group(1), version.group(2), deps
-            elif self.get_file(project, folder, 'conanfile.txt'):
-                deps, version = self.conan_read_deps(folder)
-                if deps is not None:
-                    return project, None, None, deps
-        return None, None, None, None
+        print('Check project {name}'.format(name=project['name']))
+        data = self.get_file(str(project['id']), 'conanfile.py')
+        if data is not None:
+            return self.make_package(project, data)
+        data = self.get_file(str(project['id']), 'conanfile.txt')
+        if data is not None:
+            return self.make_project(project, data)
+        return None
 
-    def deps_version_up(self, content, up_map):
-        for old, val in up_map.items():
-            content = content.replace('"' + old + '"', '"' + val + '"')
-            content = content.replace("'" + old + "'", "'" + val + "'")
-        return content
-
-    def package_version_up(self, content):
-        version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', content, re.MULTILINE)
-
-        values = version.group(1).split('.')
-        if values[-1].endswith(suffix):
-            values[-1] = str(int(values[0:len(values[-1]) - 1]) + 1) + suffix
-        else:
-            values.append('1' + suffix)
-
-        content = content[0:version.start(1)] + '.'.join(values) + content[version.end(1):]
-        return '.'.join(values)
-
-    def upload(self, folder):
-        subprocess.call(['git', 'checkout', '-b', 'version/' + version], cwd=folder)
-        subprocess.call(['git', 'commit', '-a', '-m', 'Upgrade versnios for conan packages'], cwd=folder)
-        subprocess.call(['git', 'push', 'origin', 'version/' + version], cwd=folder)
+    def update(self, info, filename, content, branch, comment):
+        print('UPDATE "{project}" with comment: {comment}'.format(project=info['name'], comment=comment))
         http = urllib3.PoolManager()
+
         r = http.request(
-            method='POST',
-            url=self._url + '/api/v4/projects/{id}/merge_requests'.format(id=project_id.replace('/', '%2F')),
+            method='PUT',
+            url='https://{gitlab}/api/v4/projects/{id}/repository/files/{file_path}'.
+                format(id=info['id'], file_path=quote_plus(filename), gitlab=self._url),
             headers={'Private-Token': self._token},
             fields={
-                'source_branch': 'version/' + version,
-                'target_branch': 'master',
-                'title': 'Version UP to ' + version,
-                'remove_source_branch': 'true',
-                'merge_when_pipeline_succeeds': 'true'
-            },
-
+                'branch': branch,
+                'start_branch': 'master',
+                'content': content,
+                'commit_message': comment
+            }
         )
-        result = json.loads(r.data.decode())
-        status = ''
-        while status != 'success':
-            r1 = http.request(
-                method='GET',
-                url=self._url + '/api/v4/projects/{id}/merge_requests/{merge_iid}/pipelines'.format(id=result['project_id'], merge_iid=result["iid"])
-            )
-            tmp = json.loads(r1.data.decode())
-            status = tmp[0]["status"]
-            if status == "failed":
-                exit("Failed to build")
-            time.sleep(5)
-
-        http.request(
-            method='PUT',
-            url=self._url + '/api/v4/projects/{id}/merge_requests/{merge_iid}/merge'.format(id=result['project_id'], merge_iid=result["iid"]),
+        if r.status != 200:
+            print('Error: %s' % r.data)
+            return False
+        r = http.request(
+            method='POST',
+            url='https://{gitlab}/api/v4/projects/{id}/merge_requests'.format(id=info['id'], gitlab=self._url),
             headers={'Private-Token': self._token},
+            fields={
+                'source_branch': branch,
+                'target_branch': 'master',
+                'title': comment,
+                'remove_source_branch': 'true'
+            }
         )
+        if r.status != 201:
+            print('Error: %s' % r.data)
+            return False
+        result = json.loads(r.data.decode())
+        if not self.wait_pipeline(http, info['id'], result['sha']):
+            return False
+        r = http.request(
+            method='PUT',
+            url='https://{gitlab}/api/v4/projects/{id}/merge_requests/{merge_iid}/merge'.
+                format(id=info['id'], merge_iid=result["iid"], gitlab=self._url),
+            headers={'Private-Token': self._token}
+        )
+        if r.status != 200:
+            print('Error: %s' % r.data)
+            return False
+        result = json.loads(r.data.decode())
+        return self.wait_pipeline(http, info['id'], result['merge_commit_sha'])
 
-
-        pipeline_id = result["pipeline"]["id"]
-        status = ''
-        while status != 'success':
+    def wait_pipeline(self, http, project, sha):
+        for _ in range(10):
             r1 = http.request(
                 method='GET',
-                url=self._url + '/api/v4/projects/{id}/pipelines/{pipeline_id}'.format(id=result['project_id'], pipeline_id=pipeline_id)
+                url='https://{gitlab}/api/v4/projects/{id}/pipelines'.format(id=project, gitlab=self._url),
+                headers = {'Private-Token': self._token}
             )
+            if r1.status != 200:
+                return False
+            pipelines = json.loads(r1.data.decode())
+            pipeline_id, status = next(((pipeline['id'], pipeline['status']) for pipeline in pipelines if pipeline['sha'] == sha), (None, None))
+            if pipeline_id is not None:
+                break
+            print('\twaiting pipeline for sha {sha}'.format(sha=sha))
+            time.sleep(15)
+        if pipeline_id is None:
+            print('Error %s' % json.dumps(pipelines))
+            return False
+
+        while status == 'running' or status == 'pending' or status == 'created':
+            r1 = http.request(
+                method='GET',
+                url='https://{gitlab}/api/v4/projects/{id}/pipelines/{pipeline_id}'.
+                    format(id=project, pipeline_id=pipeline_id, gitlab=self._url),
+                headers = {'Private-Token': self._token}
+            )
+            if r1.status != 200:
+                return False
             tmp = json.loads(r1.data.decode())
-            status = next((pipeline["status"] for pipeline in tmp if pipeline["id"] == pipeline_id))
-            if status == "failed":
-                exit("Failed to build")
-            time.sleep(5)
-        return package.name + '/' + version + '@' + package.author
-
-    def up(self, project):
-        print('UPDATE %s' % project)
-        folder = self.get_source(project)
-        conanfile = os.path.join(folder, 'conanfile.py')
-        if os.path.isfile(conanfile):
-            with open(conanfile, 'r') as fd:
-                content = fd.read()
-            new_content = self.deps_version_up(content, versions)
-            if new_content != content:
-                new_content, version = self.package_version_up(new_content)
-                upload()
-                return project, version
-
-        else:
-            conanfile = os.path.join(folder, 'conanfile.txt')
-            with open(conanfile, 'r') as fd:
-                content = fd.read()
-            if update_version(content, versions):
-                upload()
-
-        return None, None
-
-
-def version_less(first, second):
-    if first == second:
-        return False
-    f = first.split('.')
-    s = second.split('.')
-    for i in range(min(len(f), len(s))):
-        if f[i] == s[i]:
-            continue
-        if f[i].isdecimal() and s[i].isdecimal():
-            return int(f[i]) < int(s[i])
-        else:
-            return f[i] < s[i]
-    return len(f) < len(s)
-
-
-def update_version(versions, dep_name, dep_ver):
-    if dep_name in versions:
-        if version_less(versions[dep_name], dep_ver):
-            versions[dep_name] = dep_ver
-    else:
-        versions[dep_name] = dep_ver
+            status = tmp['status']
+            print('\twaiting pipeline {pipeline} for sha {sha}'.format(sha=sha, pipeline=pipeline_id))
+            time.sleep(15)
+        print('\tpipeline {pipeline} status {status}'.format(status=status, pipeline=pipeline_id))
+        return status == 'success'
 
 
 parser = argparse.ArgumentParser(description='Conan package version updater')
@@ -206,38 +261,18 @@ parser.add_argument('--gitlab-token', help='GitLab private token', required=True
 parser.add_argument('groups', help='gitlab goup list to update. All conan packages in this group will be updated', nargs='+')
 args = parser.parse_args()
 
-with tempfile.TemporaryDirectory() as workdir:
-    print("Working directory: %s" % workdir)
-    gitlab = Gitlab(args.gitlab, args.gitlab_token, workdir)
-    for group in args.groups:
-        versions = {}
-        packages = {}
-        projects = {}
-        gitlab_projects = gitlab.get_projects(group)
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            pkgs = (executor.submit(Gitlab.get_conan_versions, gitlab, str(project['path_with_namespace'])) for project in gitlab_projects)
+gitlab = Gitlab(args.gitlab, args.gitlab_token)
+for group in args.groups:
+    gitlab_projects = gitlab.get_projects(group)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        pkgs = (executor.submit(Gitlab.get_conan_versions, gitlab, project) for project in gitlab_projects)
+        projects = [future.result() for future in as_completed(pkgs) if future.result() is not None]
+        while len(projects) > 0:
+            print('='*30)
+            to_update = [project for project in projects if project.not_depends(projects)]
+            if len(to_update) == 0:
+                exit('Loop detected')
+            pkgs = (executor.submit(Gitlab.Project.up, project) for project in to_update)
             for future in as_completed(pkgs):
-                project, package, package_ver, package_deps = future.result()
-                if project is not None:
-                    for dep_name, dep_ver in package_deps.items():
-                        print('Project %s pkg %s/%s depend %s %s' % (project, package, package_ver, dep_name, dep_ver))
-                        update_version(versions, dep_name, dep_ver)
-                    if package is not None:
-                        update_version(versions, package, package_ver)
-                    projects[project] = package_deps
-                    packages[project] = package
-            while len(packages) > 0:
-                to_update = [project for project, package_deps in projects.items()
-                             if next((dep_name for dep_name in package_deps if dep_name in packages.values()), None) is None]
-                if len(to_update) == 0:
-                    for pkg, deps in packages.values():
-                        print('Left %s %s' % (pkg, ','.join(deps.keys())))
-                    exit('Loop detected')
-                print('='*30)
-                pkgs = (executor.submit(Gitlab.up, gitlab, project) for project in to_update)
-                for project in to_update:
-                    del packages[project]
-                    del projects[project]
-                for future in as_completed(pkgs):
-                    pkg, pkg_ver = future.result()
-                    versions[pkg] = pkg_ver
+                project = future.result()
+                projects.remove(project)
