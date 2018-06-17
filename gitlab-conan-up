@@ -39,7 +39,7 @@ class Gitlab:
                                                                        new=self._gitlab._versions[name])
             if len(comment) > 0:
                 comment = 'Auto updating dependencies.' + comment
-                self._gitlab.update(self.info, 'conanfile.txt', conanfile, 'version/' + hashlib.md5(comment.encode()).hexdigest(), comment)
+                self._gitlab.update(self.info, 'conanfile.txt', conanfile, 'version/' + hashlib.md5(conanfile.encode()).hexdigest(), comment)
 
         def up(self):
             print('Update: %s' % self.info['name'])
