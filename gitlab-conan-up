@@ -30,16 +30,15 @@ class Gitlab:
 
         def update(self):
             comment = ''
-            conanfile = self._conanfile
             for name, value in self._depends.items():
-                prev = conanfile
-                conanfile = conanfile.replace('\n' + name + '/' + value + '@',  '\n' + name + '/' + self._gitlab._versions[name] + '@')
-                if prev != conanfile:
+                prev = self._conanfile
+                self._conanfile = self._conanfile.replace('\n' + name + '/' + value + '@',  '\n' + name + '/' + self._gitlab._versions[name] + '@')
+                if prev != self._conanfile:
                     comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value,
                                                                        new=self._gitlab._versions[name])
             if len(comment) > 0:
                 comment = 'Auto updating dependencies.' + comment
-                self._gitlab.update(self.info, 'conanfile.txt', conanfile, 'version/' + hashlib.md5(conanfile.encode()).hexdigest(), comment)
+                self._gitlab.update(self.info, 'conanfile.txt', self._conanfile, 'version/' + hashlib.md5(self._conanfile.encode()).hexdigest(), comment)
 
         def up(self):
             print('Update: %s' % self.info['name'])
@@ -57,25 +56,24 @@ class Gitlab:
             return self._name
 
         def update(self):
-            conanfile = self._conanfile
             comment = ''
             for name, value in self._depends.items():
-                prev = conanfile
-                conanfile = conanfile.replace('"' + name + '/' + value + '@', '"' + name + '/' + self._gitlab._versions[name] + '@')
-                conanfile = conanfile.replace("'" + name + '/' + value + '@', "'" + name + '/' + self._gitlab._versions[name] + '@')
-                if prev != conanfile:
+                prev = self._conanfile
+                self._conanfile = self._conanfile.replace('"' + name + '/' + value + '@', '"' + name + '/' + self._gitlab._versions[name] + '@')
+                self._conanfile = self._conanfile.replace("'" + name + '/' + value + '@', "'" + name + '/' + self._gitlab._versions[name] + '@')
+                if prev != self._conanfile:
                     comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab._versions[name])
             if len(comment) > 0:
-                version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', conanfile, re.MULTILINE)
+                version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self._conanfile, re.MULTILINE)
                 if version:
                     values = version.group(1).split('.')
-                    while len(values)<3:
+                    while len(values) < 3:
                         values.append('0')
                     values[-1] = str(int(values[-1]) + 1)
                     self._version = '.'.join(values)
-                    conanfile = conanfile[0:version.start(1)] + self._version + conanfile[version.end(1):]
+                    self._conanfile = self._conanfile[0:version.start(1)] + self._version + self._conanfile[version.end(1):]
                     comment = 'Auto updating to version {version}'.format(version=self._version) + comment
-                    if not self._gitlab.update(self.info, 'conanfile.py', conanfile, 'version/' + self._version, comment):
+                    if not self._gitlab.update(self.info, 'conanfile.py', self._conanfile, 'version/' + self._version, comment):
                         return
             self._gitlab._versions[self._name] = self._version
 
@@ -190,6 +188,7 @@ class Gitlab:
         if r.status != 200:
             print('Error: %s' % r.data)
             return False
+
         r = http.request(
             method='POST',
             url='https://{gitlab}/api/v4/projects/{id}/merge_requests'.format(id=info['id'], gitlab=self._url),
@@ -204,9 +203,11 @@ class Gitlab:
         if r.status != 201:
             print('Error: %s' % r.data)
             return False
+
         result = json.loads(r.data.decode())
         if not self.wait_pipeline(http, info['id'], result['sha']):
             return False
+
         r = http.request(
             method='PUT',
             url='https://{gitlab}/api/v4/projects/{id}/merge_requests/{merge_iid}/merge'.
@@ -216,6 +217,7 @@ class Gitlab:
         if r.status != 200:
             print('Error: %s' % r.data)
             return False
+
         result = json.loads(r.data.decode())
         return self.wait_pipeline(http, info['id'], result['merge_commit_sha'])
 
