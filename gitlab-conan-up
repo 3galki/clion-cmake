@@ -32,13 +32,22 @@ class Gitlab:
             comment = ''
             for name, value in self._depends.items():
                 prev = self._conanfile
-                self._conanfile = self._conanfile.replace('\n' + name + '/' + value + '@',  '\n' + name + '/' + self._gitlab._versions[name] + '@')
+                self._conanfile = self._conanfile.replace(
+                    '\n' + name + '/' + value + '@',
+                    '\n' + name + '/' + self._gitlab.get_version(name) + '@'
+                )
                 if prev != self._conanfile:
                     comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value,
                                                                        new=self._gitlab._versions[name])
             if len(comment) > 0:
                 comment = 'Auto updating dependencies.' + comment
-                self._gitlab.update(self.info, 'conanfile.txt', self._conanfile, 'version/' + hashlib.md5(self._conanfile.encode()).hexdigest(), comment)
+                self._gitlab.update(
+                    self.info,
+                    'conanfile.txt',
+                    self._conanfile,
+                    'version/' + hashlib.md5(self._conanfile.encode()).hexdigest(),
+                    comment
+                )
 
         def up(self):
             print('Update: %s' % self.info['name'])
@@ -46,7 +55,7 @@ class Gitlab:
             return self
 
     class Package(Project):
-        def __init__(self,  gitlab, info, conanfile, depends, name, version):
+        def __init__(self, gitlab, info, conanfile, depends, name, version):
             super().__init__(gitlab, info, conanfile, depends)
             self._name = name
             self._version = version
@@ -59,8 +68,12 @@ class Gitlab:
             comment = ''
             for name, value in self._depends.items():
                 prev = self._conanfile
-                self._conanfile = self._conanfile.replace('"' + name + '/' + value + '@', '"' + name + '/' + self._gitlab._versions[name] + '@')
-                self._conanfile = self._conanfile.replace("'" + name + '/' + value + '@', "'" + name + '/' + self._gitlab._versions[name] + '@')
+                self._conanfile = self._conanfile.replace(
+                    '"' + name + '/' + value + '@',
+                    '"' + name + '/' + self._gitlab.get_versions(name) + '@')
+                self._conanfile = self._conanfile.replace(
+                    "'" + name + '/' + value + '@',
+                    "'" + name + '/' + self._gitlab.get_versions(name) + '@')
                 if prev != self._conanfile:
                     comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab._versions[name])
             if len(comment) > 0:
@@ -83,6 +96,9 @@ class Gitlab:
         self._pattern = re.compile('([^/]*)/([^@]*)@')
         self._versions = {}
         urllib3.disable_warnings()
+
+    def get_version(self, name):
+        return self._versions[name]
 
     def get_projects(self, group):
         http = urllib3.PoolManager()
@@ -226,12 +242,14 @@ class Gitlab:
             r1 = http.request(
                 method='GET',
                 url='https://{gitlab}/api/v4/projects/{id}/pipelines'.format(id=project, gitlab=self._url),
-                headers = {'Private-Token': self._token}
+                headers={'Private-Token': self._token}
             )
             if r1.status != 200:
                 return False
             pipelines = json.loads(r1.data.decode())
-            pipeline_id, status = next(((pipeline['id'], pipeline['status']) for pipeline in pipelines if pipeline['sha'] == sha), (None, None))
+            pipeline_id, status = next(
+                ((pipeline['id'], pipeline['status']) for pipeline in pipelines if pipeline['sha'] == sha),
+                (None, None))
             if pipeline_id is not None:
                 break
             print('\twaiting pipeline for sha {sha}'.format(sha=sha))
@@ -245,7 +263,7 @@ class Gitlab:
                 method='GET',
                 url='https://{gitlab}/api/v4/projects/{id}/pipelines/{pipeline_id}'.
                     format(id=project, pipeline_id=pipeline_id, gitlab=self._url),
-                headers = {'Private-Token': self._token}
+                headers={'Private-Token': self._token}
             )
             if r1.status != 200:
                 return False
@@ -270,7 +288,7 @@ for group in args.groups:
         pkgs = (executor.submit(Gitlab.get_conan_versions, gitlab, project) for project in gitlab_projects)
         projects = [future.result() for future in as_completed(pkgs) if future.result() is not None]
         while len(projects) > 0:
-            print('='*30)
+            print('=' * 30)
             to_update = [project for project in projects if project.not_depends(projects)]
             if len(to_update) == 0:
                 exit('Loop detected')
