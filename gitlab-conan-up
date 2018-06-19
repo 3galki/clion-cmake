@@ -60,8 +60,8 @@ class Gitlab:
             comment += self._gitlab.update_versions(self, "'{name}/{version}@")
             if len(comment) > 0:
                 version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self._conanfile, re.MULTILINE)
-                if version:
-                    values = version.group(1).split('.')
+                if version and version.group(1) == self._version:
+                    values = self._gitlab.max_version(self._name, self._version).split('.')
                     while len(values) < 3:
                         values.append('0')
                     values[-1] = str(int(values[-1]) + 1)
@@ -130,17 +130,20 @@ class Gitlab:
                 return f[i] < s[i]
         return len(f) < len(s)
 
+    def max_version(self, name, version):
+        if name in self._versions:
+            if self._version_less(self._versions[name], version):
+                return version
+            return self._versions[name]
+        return version
+
     def read_deps(self, stream):
         deps = {}
         for line in stream:
             data = line.decode().strip()
             res = self._pattern.search(data)
             if res:
-                if res.group(1) in self._versions:
-                    if self._version_less(self._versions[res.group(1)], res.group(2)):
-                        self._versions[res.group(1)] = res.group(2)
-                else:
-                    self._versions[res.group(1)] = res.group(2)
+                self.set_version(name=res.group(1), value=self.max_version(name=res.group(1), value=res.group(2)))
                 deps[res.group(1)] = res.group(2)
         return deps
 
