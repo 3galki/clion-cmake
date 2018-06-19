@@ -70,10 +70,10 @@ class Gitlab:
                 prev = self._conanfile
                 self._conanfile = self._conanfile.replace(
                     '"' + name + '/' + value + '@',
-                    '"' + name + '/' + self._gitlab.get_versions(name) + '@')
+                    '"' + name + '/' + self._gitlab.get_version(name) + '@')
                 self._conanfile = self._conanfile.replace(
                     "'" + name + '/' + value + '@',
-                    "'" + name + '/' + self._gitlab.get_versions(name) + '@')
+                    "'" + name + '/' + self._gitlab.get_version(name) + '@')
                 if prev != self._conanfile:
                     comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab._versions[name])
             if len(comment) > 0:
