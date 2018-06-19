@@ -37,8 +37,7 @@ class Gitlab:
                     '\n' + name + '/' + self._gitlab.get_version(name) + '@'
                 )
                 if prev != self._conanfile:
-                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value,
-                                                                       new=self._gitlab._versions[name])
+                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab.get_version(name))
             if len(comment) > 0:
                 comment = 'Auto updating dependencies.' + comment
                 self._gitlab.update(
@@ -75,7 +74,7 @@ class Gitlab:
                     "'" + name + '/' + value + '@',
                     "'" + name + '/' + self._gitlab.get_version(name) + '@')
                 if prev != self._conanfile:
-                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab._versions[name])
+                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab.get_version(name))
             if len(comment) > 0:
                 version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self._conanfile, re.MULTILINE)
                 if version:
@@ -88,7 +87,7 @@ class Gitlab:
                     comment = 'Auto updating to version {version}'.format(version=self._version) + comment
                     if not self._gitlab.update(self.info, 'conanfile.py', self._conanfile, 'version/' + self._version, comment):
                         return
-            self._gitlab._versions[self._name] = self._version
+            self._gitlab.set_version(self._name, self._version)
 
     def __init__(self, url, token):
         self._url = url
@@ -99,6 +98,9 @@ class Gitlab:
 
     def get_version(self, name):
         return self._versions[name]
+
+    def set_version(self, name, value):
+        self._versions[name] = value
 
     def get_projects(self, group):
         http = urllib3.PoolManager()
