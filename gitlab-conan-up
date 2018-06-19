@@ -59,16 +59,16 @@ class Gitlab:
             comment = self._gitlab.update_versions(self, '"{name}/{version}@')
             comment += self._gitlab.update_versions(self, "'{name}/{version}@")
             if len(comment) > 0:
-                version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self._conanfile, re.MULTILINE)
+                version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self.conanfile, re.MULTILINE)
                 if version and version.group(1) == self._version:
                     values = self._gitlab.max_version(self._name, self._version).split('.')
                     while len(values) < 3:
                         values.append('0')
                     values[-1] = str(int(values[-1]) + 1)
                     self._version = '.'.join(values)
-                    self._conanfile = self._conanfile[0:version.start(1)] + self._version + self._conanfile[version.end(1):]
+                    self.conanfile = self.conanfile[0:version.start(1)] + self._version + self.conanfile[version.end(1):]
                     comment = 'Auto updating to version {version}'.format(version=self._version) + comment
-                    if not self._gitlab.update(self.info, 'conanfile.py', self._conanfile, 'version/' + self._version, comment):
+                    if not self._gitlab.update(self.info, 'conanfile.py', self.conanfile, 'version/' + self._version, comment):
                         return
             self._gitlab.set_version(self._name, self._version)
 
