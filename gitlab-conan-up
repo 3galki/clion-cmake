@@ -18,33 +18,25 @@ class Gitlab:
         def __init__(self, gitlab, info, conanfile, depends):
             self._gitlab = gitlab
             self.info = info
-            self._conanfile = conanfile
-            self._depends = depends
+            self.conanfile = conanfile
+            self.depends = depends
 
         @property
         def name(self):
             return None
 
         def not_depends(self, projects):
-            return next((False for depend in self._depends if next((True for base in projects if base.name == depend), False)), True)
+            return next((False for depend in self.depends if next((True for base in projects if base.name == depend), False)), True)
 
         def update(self):
-            comment = ''
-            for name, value in self._depends.items():
-                prev = self._conanfile
-                self._conanfile = self._conanfile.replace(
-                    '\n' + name + '/' + value + '@',
-                    '\n' + name + '/' + self._gitlab.get_version(name) + '@'
-                )
-                if prev != self._conanfile:
-                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab.get_version(name))
+            comment = self._gitlab.update_versions(self, "\n{name}/{version}@")
             if len(comment) > 0:
                 comment = 'Auto updating dependencies.' + comment
                 self._gitlab.update(
                     self.info,
                     'conanfile.txt',
-                    self._conanfile,
-                    'version/' + hashlib.md5(self._conanfile.encode()).hexdigest(),
+                    self.conanfile,
+                    'version/' + hashlib.md5(self.conanfile.encode()).hexdigest(),
                     comment
                 )
 
@@ -64,17 +56,8 @@ class Gitlab:
             return self._name
 
         def update(self):
-            comment = ''
-            for name, value in self._depends.items():
-                prev = self._conanfile
-                self._conanfile = self._conanfile.replace(
-                    '"' + name + '/' + value + '@',
-                    '"' + name + '/' + self._gitlab.get_version(name) + '@')
-                self._conanfile = self._conanfile.replace(
-                    "'" + name + '/' + value + '@',
-                    "'" + name + '/' + self._gitlab.get_version(name) + '@')
-                if prev != self._conanfile:
-                    comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._gitlab.get_version(name))
+            comment = self._gitlab.update_versions(self, '"{name}/{version}@')
+            comment += self._gitlab.update_versions(self, "'{name}/{version}@")
             if len(comment) > 0:
                 version = re.search(r'''^\s+version\s*=\s*['"]([^'"]*).*$''', self._conanfile, re.MULTILINE)
                 if version:
@@ -96,8 +79,17 @@ class Gitlab:
         self._versions = {}
         urllib3.disable_warnings()
 
-    def get_version(self, name):
-        return self._versions[name]
+    def update_versions(self, project: Project, pattern):
+        comment = ''
+        for name, value in project.depends.items():
+            tmp = project.conanfile.replace(
+                pattern.format(name=name, version=value),
+                pattern.format(name=name, version=self._versions[name])
+            )
+            if tmp != project.conanfile:
+                project.conanfile = tmp
+                comment += '\nupdate {name} {old} => {new}'.format(name=name, old=value, new=self._versions[name])
+        return comment
 
     def set_version(self, name, value):
         self._versions[name] = value
