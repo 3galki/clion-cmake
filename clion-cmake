@@ -173,7 +173,7 @@ else:
         if len(file) > 0:
             folder = os.path.dirname(file)
             if not os.path.isdir(folder):
-                os.mkdir(folder)
+                os.makedirs(folder)
             if file.find(conan_tmp) == -1:
                 if file.endswith('/CMakeFiles'):
                     file += '/'
