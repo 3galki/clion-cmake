@@ -130,11 +130,12 @@ else:
 
         packages = json.loads(shell.run(['cat', os.getcwd() + '/install.json']))
         for installed in packages["installed"]:
-            for item in (item["id"] for item in installed["packages"] if not item["cache"]):
+            for item in installed["packages"]:
                 package_path = conan_dir + '/.conan/data/{recipe}/package/{item}'.\
                     format(recipe=installed["recipe"]["id"], item=item).replace('@', '/')
-                os.makedirs(package_path, exist_ok=True)
-                shell.sync_artifacts(package_path + '/')
+                if not item["cache"] or not os.path.isdir(package_path):
+                    os.makedirs(package_path, exist_ok=True)
+                    shell.sync_artifacts(package_path + '/')
 
         if os.path.isfile(conanfile_py):
             shell.call(['CONAN_USER_HOME=' + conan_dir, 'conan', 'install',
