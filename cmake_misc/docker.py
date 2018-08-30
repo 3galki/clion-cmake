@@ -11,10 +11,19 @@ _docker_script = '''FROM lasote/conanclang60
 LABEL maintainer "greed@ispsystem.com"
 
 COPY libpopt0_1.16-11_amd64.deb /root/libpopt0_1.16-11_amd64.deb
-COPY rsync_3.1.2-2.1_amd64.deb /root/rsync_3.1.2-2.1_amd64.deb
+COPY rsync_3.1.2-2.2_amd64.deb /root/rsync_3.1.2-2.2_amd64.deb
+COPY cmake-3.12.1.tar.gz /home/conan/cmake-3.12.1.tar.gz
 RUN sudo dpkg -i /root/libpopt0_1.16-11_amd64.deb &&\
- sudo dpkg -i /root/rsync_3.1.2-2.1_amd64.deb &&\
- sudo rm -f /root/libpopt0_1.16-11_amd64.deb /root/rsync_3.1.2-2.1_amd64.deb
+ sudo dpkg -i /root/rsync_3.1.2-2.2_amd64.deb &&\
+ sudo rm -f /root/libpopt0_1.16-11_amd64.deb /root/rsync_3.1.2-2.2_amd64.deb
+RUN tar xzf cmake-3.12.1.tar.gz && cd cmake-3.12.1 && ./bootstrap --prefix=/usr && make -j4 &&\
+ sudo make install &&\
+ sudo ln -s cmake /usr/bin/cmake3 &&\
+ sudo ln -s ctest /usr/bin/ctest3 &&\
+ sudo ln -s cpack /usr/bin/cpack3 &&\
+ rm -rf /home/conan/cmake-3.12.1*
+COPY cotire.cmake /usr/share/cmake-3.12/Modules/cotire.cmake
+
 RUN conan profile new --detect default &&\
  conan profile update env.CC=clang default &&\
  conan profile update env.CXX=clang++ default &&\
@@ -43,11 +52,15 @@ Or you can create docker image by command: `{self} --make-docker-image`
 
 def make_docker_image():
     temp = tempfile.mkdtemp()
-    print("Downloading rsync package")
+    print("Downloading nested packages")
     urllib.request.urlretrieve('http://http.us.debian.org/debian/pool/main/p/popt/libpopt0_1.16-11_amd64.deb',
                                os.path.join(temp, 'libpopt0_1.16-11_amd64.deb'))
-    urllib.request.urlretrieve('http://http.us.debian.org/debian/pool/main/r/rsync/rsync_3.1.2-2.1_amd64.deb',
-                               os.path.join(temp, 'rsync_3.1.2-2.1_amd64.deb'))
+    urllib.request.urlretrieve('http://http.us.debian.org/debian/pool/main/r/rsync/rsync_3.1.2-2.2_amd64.deb',
+                               os.path.join(temp, 'rsync_3.1.2-2.2_amd64.deb'))
+    urllib.request.urlretrieve('https://cmake.org/files/v3.12/cmake-3.12.1.tar.gz',
+                               os.path.join(temp, 'cmake-3.12.1.tar.gz'))
+    urllib.request.urlretrieve('https://raw.githubusercontent.com/sakra/cotire/master/CMake/cotire.cmake',
+                               os.path.join(temp, 'cotire.cmake'))
     add_content = ''
     registry = os.path.join(os.environ.get('HOME'), '.conan', 'registry.txt')
     if os.path.isfile(registry):
