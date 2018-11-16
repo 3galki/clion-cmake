@@ -192,6 +192,8 @@ else:
                             '-G', 'Ninja',
                             '-DCMAKE_C_COMPILER=' + os.path.join(toolchain, compiler),
                             '-DCMAKE_CXX_COMPILER=' + os.path.join(toolchain, cpp(compiler)),
+                            '-DCMAKE_C_FLAGS=-fPIC -fprofile-instr-generate -fcoverage-mapping -fsanitize=address -fno-omit-frame-pointer',
+                            '-DCMAKE_CXX_FLAGS=-fPIC -fprofile-instr-generate -fcoverage-mapping -fsanitize=address -fno-omit-frame-pointer',
                             ] + ['"' + x + '"' for x in args], stdout=subprocess.DEVNULL, desc="Prepare project for ninja build")
 
 exit(cmake)

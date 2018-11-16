@@ -7,7 +7,7 @@ import tempfile
 import urllib.request
 from cmake_misc.remote import Remote
 
-_docker_script = '''FROM lasote/conanclang60
+_docker_script = '''FROM conanio/clang7
 LABEL maintainer "greed@ispsystem.com"
 
 COPY libpopt0_1.16-11_amd64.deb /root/libpopt0_1.16-11_amd64.deb
@@ -73,7 +73,7 @@ def get_docker_shell(environ):
             stopped_docker_id = subprocess.run(container_lookup_args + ['-a'], stdout=subprocess.PIPE).stdout.decode().strip()
             if len(stopped_docker_id) == 0:
                 sys.stderr.write('Create docker from image "%s": %s\n' % (docker_image, docker_id))
-                docker_id = subprocess.run(['docker', 'create', docker_image],
+                docker_id = subprocess.run(['docker', 'create', '--security-opt', 'seccomp:unconfined', '--cap-add=SYS_PTRACE', docker_image],
                                            stdout=subprocess.PIPE).stdout.decode().strip()
                 if len(docker_id) == 0:
                     sys.stderr.write(_docker_todo.format(self=sys.argv[0], image=docker_image))
