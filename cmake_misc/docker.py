@@ -53,8 +53,8 @@ def make_docker_image():
     registry = os.path.join(os.environ.get('HOME'), '.conan', 'registry.json')
     if os.path.isfile(registry):
         content = open(registry, 'r').read()
-        open(os.path.join(temp, 'registry.txt'), 'w').write(content[0:content.find('\n\n')])
-        add_content = 'COPY registry.txt /home/conan/.conan/'
+        open(os.path.join(temp, 'registry.json'), 'w').write(content[0:content.find('\n\n')])
+        add_content = 'COPY registry.json /home/conan/.conan/'
     open(os.path.join(temp, 'Dockerfile'), 'w').write(_docker_script.format(addon=add_content))
     docker_image = os.environ.get("CLION_BUILD_IMAGE", "clion-build")
     print("Building docker image at folder '%s'" % temp)
