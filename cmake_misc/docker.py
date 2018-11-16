@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -52,8 +53,12 @@ def make_docker_image():
     add_content = ''
     registry = os.path.join(os.environ.get('HOME'), '.conan', 'registry.json')
     if os.path.isfile(registry):
-        content = open(registry, 'r').read()
-        open(os.path.join(temp, 'registry.json'), 'w').write(content[0:content.find('\n\n')])
+        with open(registry, 'r') as fp:
+            content = json.load(fp)
+            if "references" in content:
+                del content["references"]
+            with open(os.path.join(temp, 'registry.json'), 'w') as fp:
+                json.dump(content, fp, indent=2)
         add_content = 'COPY registry.json /home/conan/.conan/'
     open(os.path.join(temp, 'Dockerfile'), 'w').write(_docker_script.format(addon=add_content))
     docker_image = os.environ.get("CLION_BUILD_IMAGE", "clion-build")
