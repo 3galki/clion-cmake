@@ -50,7 +50,7 @@ def make_docker_image():
     urllib.request.urlretrieve('http://http.us.debian.org/debian/pool/main/r/rsync/rsync_3.1.2-2.2_amd64.deb',
                                os.path.join(temp, 'rsync_3.1.2-2.2_amd64.deb'))
     add_content = ''
-    registry = os.path.join(os.environ.get('HOME'), '.conan', 'registry.txt')
+    registry = os.path.join(os.environ.get('HOME'), '.conan', 'registry.json')
     if os.path.isfile(registry):
         content = open(registry, 'r').read()
         open(os.path.join(temp, 'registry.txt'), 'w').write(content[0:content.find('\n\n')])
