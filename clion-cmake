@@ -133,7 +133,7 @@ else:
             for item in installed["packages"]:
                 package_path = conan_dir + '/.conan/data/{recipe}/package/{item}'.\
                     format(recipe=installed["recipe"]["id"], item=item["id"]).replace('@', '/')
-                if not item["cache"] or not os.path.isdir(package_path):
+                if item["downloaded"] or item["built"] or not os.path.isdir(package_path):
                     os.makedirs(package_path, exist_ok=True)
                     shell.sync_artifacts(package_path + '/')
 
