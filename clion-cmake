@@ -146,8 +146,11 @@ else:
         compiler = detect_compiler(shell)
 
     shell.mkdir(toolchain)
-    shell.call(args=['ln', '-fs', '`which %s`' % compiler, os.path.join(toolchain, compiler), ';',
+    shell.call(args=['test', '-e', os.path.join(toolchain, compiler), '||',
+                     'ln', '-fs', '`which %s`' % compiler, os.path.join(toolchain, compiler), ';',
+                     'test', '-e', os.path.join(toolchain, cpp(compiler)), '||',
                      'ln', '-fs', '`which %s`' % cpp(compiler), os.path.join(toolchain, cpp(compiler)), ';',
+                     'test', '-e', os.path.join(toolchain, 'make'), '||',
                      'ln', '-fs', '`which make`', os.path.join(toolchain, 'make')
                      ], desc="Prepare toolchain: path=%s, compiler=%s" % (toolchain, compiler))
     if not os.path.isdir(toolchain):
